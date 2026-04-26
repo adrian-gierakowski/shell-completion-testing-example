@@ -3,6 +3,10 @@ import subprocess
 import sys
 import os
 
+# Sentinel echoed between setup commands and the completion trigger so that
+# unexpected-item checks only inspect completion output, not echoed paths.
+_SENTINEL = 'COMP_SENTINEL_7f3a'
+
 
 def test_shell(name, command, setup_commands, trigger_command,
                expected=None, unexpected=None):
@@ -35,9 +39,9 @@ def test_shell(name, command, setup_commands, trigger_command,
     # commands to separate their echoed paths (which may coincidentally
     # contain completion words) from the actual completion output.
     if unexpected:
-        p.sendline('echo COMP_SENTINEL_7f3a')
+        p.sendline(f'echo {_SENTINEL}')
         try:
-            p.expect('COMP_SENTINEL_7f3a', timeout=5)
+            p.expect(_SENTINEL, timeout=5)
         except pexpect.TIMEOUT:
             print(f"[{name}] TIMEOUT waiting for sentinel")
             sys.exit(1)
