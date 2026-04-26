@@ -53,27 +53,82 @@ def test_bash(name, cwd, comp_words, expected):
 
 
 def test_zsh(name, cwd, comp_words, expected):
-    """Test Zsh completions non-interactively by evaluating the candidate array.
+    """Test Zsh completions non-interactively via compadd capture.
 
-    Loads the ``_mycli`` completion file in Zsh (stripping the ``#compdef``
-    directive and the ``_describe`` call), which populates the ``cmds``
-    array with ``key:description`` entries.  Candidates are then extracted,
-    filtered by the current prefix, and compared against *expected* exactly.
+    Loads the completion function through ``compinit`` + ``fpath`` (the
+    standard Zsh mechanism), then overrides ``compadd`` to capture the
+    candidates that ``_describe`` (or any other completion helper) passes
+    to it.  The actual completion set is compared against *expected*
+    exactly.
+
+    This treats the completion script as a black box—only the public Zsh
+    completion API (fpath, compinit, compadd) is used.
     """
     print(f"Testing {name}...")
 
     prefix = comp_words[-1]
-    comp_file = f'{cwd}/completions/_mycli'
+    words_zsh = ' '.join(f'"{w}"' for w in comp_words)
+    current = len(comp_words)
 
     zsh_script = f'''
-eval "$(sed '/#compdef/d; /_describe/d' {comp_file})"
-prefix="{prefix}"
-for entry in "${{cmds[@]}}"; do
-  candidate="${{entry%%:*}}"
-  if [[ -z "$prefix" || "$candidate" == ${{prefix}}* ]]; then
-    print "$candidate"
+autoload -Uz compinit
+fpath=({cwd}/completions $fpath)
+compinit -u
+
+# --- Test harness: capture compadd candidates ---
+
+typeset -a _captured
+typeset _tags_iter=
+
+# Override compadd to record completion candidates.
+compadd() {{
+  local -a _zo
+  # Strip all standard compadd options; -D leaves positional args in $@.
+  zparseopts -D -a _zo \\
+    J: V: d: o: s: S: p: P: i: I: W: F: r: R: M+: x: X: E: \\
+    q e f k l U Q n 1 2 C a O: A: D:
+
+  # When -a is given, positional args are array names, not literals.
+  local _has_a=0
+  for _o in "${{_zo[@]}}"; do [[ "$_o" = "-a" ]] && _has_a=1; done
+
+  local -a _cands
+  if (( _has_a )); then
+    for _n in "$@"; do _cands+=("${{(@P)_n}}"); done
+  else
+    _cands=("$@")
   fi
-done
+
+  # Apply the same PREFIX filtering that the real compadd would perform.
+  for _c in "${{_cands[@]}}"; do
+    if [[ -z "$PREFIX" || "$_c" == ${{PREFIX}}* ]]; then
+      _captured+=("$_c")
+    fi
+  done
+}}
+
+# Stub _tags / _requested so _describe works outside a widget context.
+# _tags must succeed on the first call and fail on the second to end
+# the tag loop that _describe uses internally.
+_tags() {{
+  if [[ -n "$_tags_iter" ]]; then
+    _tags_iter=
+    return 1
+  fi
+  _tags_iter=1
+  return 0
+}}
+_requested() {{ return 0; }}
+
+# --- Set completion context and invoke the function ---
+
+words=({words_zsh})
+CURRENT={current}
+PREFIX="{prefix}"
+
+_mycli 2>/dev/null
+
+printf '%s\\n' "${{_captured[@]}}"
 '''
 
     result = subprocess.run(
@@ -182,7 +237,7 @@ if __name__ == '__main__':
     )
 
     # --- Zsh tests ------------------------------------------------------------
-    # Non-interactive: evaluate the candidate array from _mycli directly.
+    # Non-interactive: load via compinit + fpath, capture compadd candidates.
 
     test_zsh(
         name="Zsh - all completions",
