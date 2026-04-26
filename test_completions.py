@@ -53,16 +53,24 @@ def test_bash(name, cwd, comp_words, expected):
 
 
 def test_zsh(name, cwd, comp_words, expected):
-    """Test Zsh completions non-interactively via compadd capture.
+    """Test Zsh completions non-interactively via completion-API interception.
 
     Loads the completion function through ``compinit`` + ``fpath`` (the
-    standard Zsh mechanism), then overrides ``compadd`` to capture the
-    candidates that ``_describe`` (or any other completion helper) passes
-    to it.  The actual completion set is compared against *expected*
-    exactly.
+    standard Zsh mechanism), then overrides the public completion helpers
+    (``_describe`` and ``compadd``) to capture the candidates that the
+    completion script registers.
 
-    This treats the completion script as a black box—only the public Zsh
-    completion API (fpath, compinit, compadd) is used.
+    This treats the completion script as a black box — it is loaded and
+    invoked through the standard Zsh completion system, and we only
+    intercept the public API surface through which candidates are
+    registered.
+
+    *Why override ``_describe``?*  The real ``_describe`` relies on
+    builtins (``comptags``, ``compdescribe``) that are only available
+    inside a ZLE widget context.  Overriding it lets us capture
+    candidates without requiring an interactive terminal.  ``compadd``
+    (the builtin) is also overridden as a fallback for scripts that
+    register candidates directly.
     """
     print(f"Testing {name}...")
 
@@ -75,79 +83,80 @@ autoload -Uz compinit
 fpath=({cwd}/completions $fpath)
 compinit -u
 
-# --- Test harness: capture compadd candidates ---
+# --- Test harness: capture completion candidates ---
 
 typeset -a _captured
 
-# Override compadd to record completion candidates.
+# Override _describe (the standard Zsh completion helper for adding
+# candidates with descriptions).  The real implementation depends on
+# builtins (comptags, compdescribe) that only work inside a ZLE widget,
+# so we replace it with a simple version that extracts candidates from
+# the "key:description" arrays and filters by PREFIX.
+_describe() {{
+  local _opt
+  local OPTIND OPTARG
+  # Strip standard _describe option flags.
+  while getopts "oOt:12JVx" _opt; do :; done
+  shift $(( OPTIND - 1 ))
+
+  # First positional arg is the group description — skip it.
+  shift
+
+  # Remaining positional args are array names (possibly with match
+  # arrays, extra options, and "--" group separators).
+  while (( $# )); do
+    if [[ "$1" = -- ]]; then shift; continue; fi
+    if [[ "$1" = -* ]]; then shift; continue; fi
+
+    # Treat as an array of "key:description" entries.
+    local -a _arr
+    _arr=("${{(@P)1}}")
+    shift
+
+    for _entry in "${{_arr[@]}}"; do
+      local _cand="${{_entry%%:*}}"
+      if [[ -z "$PREFIX" || "$_cand" == ${{PREFIX}}* ]]; then
+        _captured+=("$_cand")
+      fi
+    done
+
+    # If the next arg is also a plain name (not an option or separator),
+    # it is the optional matches array — skip it.
+    if [[ $# -gt 0 && "$1" != -* && "$1" != -- ]]; then
+      shift
+    fi
+  done
+  return 0
+}}
+
+# Override compadd (shadows the builtin) as a fallback for scripts that
+# register candidates directly rather than through _describe.
 compadd() {{
-  echo "DEBUG compadd called with: $*" >&2
   local -a _zo
-  # Strip all standard compadd options; -D leaves positional args in $@.
   zparseopts -D -a _zo \\
     J: V: d: o: s: S: p: P: i: I: W: F: r: R: M+: x: X: E: \\
     q e f k l U Q n 1 2 C a O: A: D:
 
-  echo "DEBUG compadd zparseopts exit=$?, remaining args: $*" >&2
-  echo "DEBUG compadd parsed opts: $_zo" >&2
-
-  # When -a is given, positional args are array names, not literals.
   local _has_a=0
   for _o in "${{_zo[@]}}"; do [[ "$_o" = "-a" ]] && _has_a=1; done
 
-  echo "DEBUG compadd has_a=$_has_a" >&2
-
   local -a _cands
   if (( _has_a )); then
-    for _n in "$@"; do
-      echo "DEBUG compadd expanding array '$_n' = ${{(@P)_n}}" >&2
-      _cands+=("${{(@P)_n}}")
-    done
+    for _n in "$@"; do _cands+=("${{(@P)_n}}"); done
   else
     _cands=("$@")
   fi
 
-  echo "DEBUG compadd candidates: ${{_cands[*]}}" >&2
-  echo "DEBUG compadd PREFIX='$PREFIX'" >&2
-
-  # Apply the same PREFIX filtering that the real compadd would perform.
   for _c in "${{_cands[@]}}"; do
     if [[ -z "$PREFIX" || "$_c" == ${{PREFIX}}* ]]; then
       _captured+=("$_c")
     fi
   done
-  echo "DEBUG compadd _captured now: ${{_captured[*]}}" >&2
 }}
 
-# Stub _tags / _requested so _describe works outside a widget context.
-# _describe calls _tags in the standard Zsh completion pattern:
-#   _tags "tag-name"    (init: must return 0)
-#   while _tags; do     (1st iteration: must return 0)
-#     ...compadd...
-#   done                (2nd iteration: must return 1 to end loop)
-typeset -i _tags_state=0
-_tags() {{
-  echo "DEBUG _tags called (state=$_tags_state) args: $*" >&2
-  if (( _tags_state < 2 )); then
-    (( _tags_state++ ))
-    return 0
-  fi
-  _tags_state=0
-  return 1
-}}
-
-# _requested must return 0 exactly once per tag (to run the inner
-# while-loop body once), then return 1 to exit the inner loop.
-typeset -i _requested_done=0
-_requested() {{
-  echo "DEBUG _requested called (done=$_requested_done) args: $*" >&2
-  if (( _requested_done )); then return 1; fi
-  _requested_done=1
-  # Set the _expl array expected by _describe (Zsh convention:
-  # _requested "tag" expl "desc" populates _expl in the caller).
-  _expl=()
-  return 0
-}}
+# Stub _tags so that completion scripts calling it directly (outside
+# _describe) do not hit the comptags builtin.
+_tags() {{ return 0; }}
 
 # --- Set completion context and invoke the function ---
 
@@ -155,18 +164,7 @@ words=({words_zsh})
 CURRENT={current}
 PREFIX="{prefix}"
 
-echo "DEBUG: about to call _mycli" >&2
-echo "DEBUG: type _mycli = $(whence -w _mycli)" >&2
-echo "DEBUG: type _describe = $(whence -w _describe)" >&2
-echo "DEBUG: type _tags = $(whence -w _tags)" >&2
-echo "DEBUG: type _requested = $(whence -w _requested)" >&2
-echo "DEBUG: type compadd = $(whence -w compadd)" >&2
-echo "DEBUG: words=${{words[*]}} CURRENT=$CURRENT PREFIX=$PREFIX" >&2
-
-_mycli
-
-echo "DEBUG: _mycli exit=$?" >&2
-echo "DEBUG: _captured count=${{#_captured[@]}} values=${{_captured[*]}}" >&2
+_mycli 2>/dev/null
 
 printf '%s\\n' "${{_captured[@]}}"
 '''
@@ -176,14 +174,9 @@ printf '%s\\n' "${{_captured[@]}}"
         capture_output=True, text=True, timeout=10,
     )
 
-    # Always print stderr for debugging (temporary).
-    if result.stderr:
-        print(f"[{name}] debug output:")
-        for line in result.stderr.strip().splitlines():
-            print(f"  {line}")
-
     if result.returncode != 0:
         print(f"[{name}] command exited with status {result.returncode}")
+        print(f"stderr: {result.stderr!r}")
         sys.exit(1)
 
     actual = {l.strip() for l in result.stdout.strip().splitlines() if l.strip()}
