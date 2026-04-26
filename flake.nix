@@ -35,10 +35,10 @@
               cp mycli.sh $out/bin/mycli
               chmod +x $out/bin/mycli
 
-              installShellCompletion \
-                completions/mycli.bash \
-                completions/_mycli \
-                completions/mycli.fish
+              installShellCompletion --cmd mycli \
+                --bash completions/mycli.bash \
+                --zsh completions/_mycli \
+                --fish completions/mycli.fish
             '';
 
             doCheck = true;
@@ -52,6 +52,27 @@
               python3 test_completions.py
             '';
           };
+        }
+      );
+
+      checks = forAllSystems (system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          pkg = self.packages.${system}.default;
+        in {
+          completion-files = pkgs.runCommand "check-completion-files" {} ''
+            echo "Checking bash completion..."
+            test -f ${pkg}/share/bash-completion/completions/mycli
+
+            echo "Checking zsh completion..."
+            test -f ${pkg}/share/zsh/site-functions/_mycli
+
+            echo "Checking fish completion..."
+            test -f ${pkg}/share/fish/vendor_completions.d/mycli.fish
+
+            echo "All completion files present."
+            touch $out
+          '';
         }
       );
     };
