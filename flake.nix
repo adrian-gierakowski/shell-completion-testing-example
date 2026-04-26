@@ -66,7 +66,7 @@
 
             echo ""
             echo "Checking bash completion..."
-            test -f "${pkg}/share/bash-completion/completions/mycli"
+            test -f "${pkg}/share/bash-completion/completions/mycli.bash"
 
             echo "Checking zsh completion..."
             test -f "${pkg}/share/zsh/site-functions/_mycli"
