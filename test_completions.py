@@ -1,4 +1,5 @@
 import pexpect
+import subprocess
 import sys
 import os
 
@@ -54,14 +55,21 @@ if __name__ == '__main__':
         trigger_command='mycli \t'
     )
 
-    test_shell(
-        name="Fish",
-        command="fish --private",
-        setup_commands=[
-            'set -U fish_greeting',
-            f'source {cwd}/completions/mycli.fish'
-        ],
-        trigger_command='mycli \t'
+    # Fish 4+ sends XTGETTCAP terminal capability queries on PTY startup, which
+    # interferes with pexpect-based interactive testing.  Use `complete -C`
+    # (Fish's built-in non-interactive completion query) instead.
+    print("Testing Fish...")
+    fish_result = subprocess.run(
+        ['fish', '-c', f'source {cwd}/completions/mycli.fish; complete -C "mycli "'],
+        capture_output=True, text=True, timeout=10
     )
+    fish_output = fish_result.stdout + fish_result.stderr
+    for expected in ['build', 'deploy', 'test']:
+        if expected not in fish_output:
+            print(f"[Fish] MISSING '{expected}' in output")
+            print(f"stdout: {fish_result.stdout!r}")
+            print(f"stderr: {fish_result.stderr!r}")
+            sys.exit(1)
+    print("[Fish] completion OK\n")
 
     print("All PTY completion tests passed successfully.")
