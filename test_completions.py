@@ -1,0 +1,67 @@
+import pexpect
+import sys
+import os
+
+def test_shell(name, command, setup_commands, trigger_command):
+    print(f"Testing {name}...")
+    
+    # Enforce a rich terminal environment for correct prompt/completion rendering
+    env = os.environ.copy()
+    env['TERM'] = 'xterm-256color'
+    
+    p = pexpect.spawn(command, env=env, encoding='utf-8')
+    
+    # Send setup configurations (e.g., sourcing files, binding tabs)
+    for cmd in setup_commands:
+        p.sendline(cmd)
+        
+    # Trigger the completion via literal Tab key (\t)
+    p.send(trigger_command)
+    
+    # Compgen, _describe, and fish all output completions alphabetically
+    # So we assert against the ordered sequence in the output buffer
+    for expected in ['build', 'deploy', 'test']:
+        try:
+            p.expect(expected, timeout=5)
+        except pexpect.TIMEOUT:
+            print(f"[{name}] TIMEOUT waiting for '{expected}'")
+            print(f"Buffer dump: {p.buffer}")
+            sys.exit(1)
+            
+    print(f"[{name}] completion OK\n")
+
+if __name__ == '__main__':
+    cwd = os.getcwd()
+    
+    test_shell(
+        name="Bash",
+        command="bash --noprofile --norc",
+        setup_commands=[
+            'bind "set show-all-if-ambiguous on"',
+            f'source {cwd}/completions/mycli.bash',
+        ],
+        trigger_command='mycli \t'
+    )
+
+    test_shell(
+        name="Zsh",
+        command="zsh -f",
+        setup_commands=[
+            'autoload -Uz compinit',
+            f'fpath=({cwd}/completions $fpath)',
+            'compinit -u',  # -u ignores insecure directory warnings in the sandbox
+        ],
+        trigger_command='mycli \t'
+    )
+
+    test_shell(
+        name="Fish",
+        command="fish --private",
+        setup_commands=[
+            'set -U fish_greeting',
+            f'source {cwd}/completions/mycli.fish'
+        ],
+        trigger_command='mycli \t'
+    )
+
+    print("All PTY completion tests passed successfully.")

@@ -1,0 +1,5 @@
+#compdef mycli
+
+local -a cmds
+cmds=(build test deploy)
+_describe 'commands' cmds
