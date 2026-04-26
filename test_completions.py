@@ -78,7 +78,6 @@ compinit -u
 # --- Test harness: capture compadd candidates ---
 
 typeset -a _captured
-typeset _tags_iter=
 
 # Override compadd to record completion candidates.
 compadd() {{
@@ -108,15 +107,19 @@ compadd() {{
 }}
 
 # Stub _tags / _requested so _describe works outside a widget context.
-# _tags must succeed on the first call and fail on the second to end
-# the tag loop that _describe uses internally.
+# _describe calls _tags in the standard Zsh completion pattern:
+#   _tags "tag-name"    (init: must return 0)
+#   while _tags; do     (1st iteration: must return 0)
+#     ...compadd...
+#   done                (2nd iteration: must return 1 to end loop)
+typeset -i _tags_state=0
 _tags() {{
-  if [[ -n "$_tags_iter" ]]; then
-    _tags_iter=
-    return 1
+  if (( _tags_state < 2 )); then
+    (( _tags_state++ ))
+    return 0
   fi
-  _tags_iter=1
-  return 0
+  _tags_state=0
+  return 1
 }}
 _requested() {{ return 0; }}
 
