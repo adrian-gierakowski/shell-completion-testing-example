@@ -63,6 +63,10 @@
           completion-files = pkgs.runCommand "check-completion-files" {
             inherit pkg;
           } ''
+            echo "=== Package contents ==="
+            find "$pkg" -type f | sort
+
+            echo ""
             echo "Checking bash completion..."
             test -f "$pkg/share/bash-completion/completions/mycli"
 
