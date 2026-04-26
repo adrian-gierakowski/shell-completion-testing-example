@@ -1,5 +1,9 @@
 #compdef mycli
 
 local -a cmds
-cmds=(build test deploy)
+cmds=(
+  'build:Build the project'
+  'test:Run the test suite'
+  'deploy:Deploy the application'
+)
 _describe 'commands' cmds

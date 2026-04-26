@@ -3,9 +3,13 @@ import subprocess
 import sys
 import os
 
-def test_shell(name, command, setup_commands, trigger_command):
+def test_shell(name, command, setup_commands, trigger_command,
+               expected=None):
     print(f"Testing {name}...")
     
+    if expected is None:
+        expected = ['build', 'deploy', 'test']
+
     # Enforce a rich terminal environment for correct prompt/completion rendering
     env = os.environ.copy()
     env['TERM'] = 'xterm-256color'
@@ -21,11 +25,11 @@ def test_shell(name, command, setup_commands, trigger_command):
     
     # Compgen, _describe, and fish all output completions alphabetically
     # So we assert against the ordered sequence in the output buffer
-    for expected in ['build', 'deploy', 'test']:
+    for item in expected:
         try:
-            p.expect(expected, timeout=5)
+            p.expect(item, timeout=5)
         except pexpect.TIMEOUT:
-            print(f"[{name}] TIMEOUT waiting for '{expected}'")
+            print(f"[{name}] TIMEOUT waiting for '{item}'")
             print(f"Buffer dump: {p.buffer}")
             sys.exit(1)
             
@@ -52,7 +56,11 @@ if __name__ == '__main__':
             f'fpath=({cwd}/completions $fpath)',
             'compinit -u',  # -u ignores insecure directory warnings in the sandbox
         ],
-        trigger_command='mycli \t'
+        trigger_command='mycli \t',
+        # Verify both subcommand names and their descriptions (zsh _describe feature)
+        expected=['build', 'Build the project',
+                  'deploy', 'Deploy the application',
+                  'test', 'Run the test suite'],
     )
 
     # Fish 4+ sends XTGETTCAP terminal capability queries on PTY startup, which

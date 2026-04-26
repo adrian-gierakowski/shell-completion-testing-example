@@ -27,6 +27,7 @@
               pkgs.bashInteractive
               pkgs.zsh
               pkgs.fish
+              pkgs.installShellFiles
             ];
 
             installPhase = ''
@@ -34,15 +35,10 @@
               cp mycli.sh $out/bin/mycli
               chmod +x $out/bin/mycli
 
-              # Standard paths for completions
-              mkdir -p $out/share/bash-completion/completions
-              cp completions/mycli.bash $out/share/bash-completion/completions/mycli
-
-              mkdir -p $out/share/zsh/site-functions
-              cp completions/_mycli $out/share/zsh/site-functions/_mycli
-
-              mkdir -p $out/share/fish/vendor_completions.d
-              cp completions/mycli.fish $out/share/fish/vendor_completions.d/mycli.fish
+              installShellCompletion --cmd mycli \
+                --bash completions/mycli.bash \
+                --zsh completions/_mycli \
+                --fish completions/mycli.fish
             '';
 
             doCheck = true;
@@ -56,6 +52,31 @@
               python3 test_completions.py
             '';
           };
+        }
+      );
+
+      checks = forAllSystems (system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          pkg = self.packages.${system}.default;
+        in {
+          completion-files = pkgs.runCommand "check-completion-files" {} ''
+            echo "=== Package contents ==="
+            find "${pkg}" -type f | sort
+
+            echo ""
+            echo "Checking bash completion..."
+            test -f "${pkg}/share/bash-completion/completions/mycli.bash"
+
+            echo "Checking zsh completion..."
+            test -f "${pkg}/share/zsh/site-functions/_mycli"
+
+            echo "Checking fish completion..."
+            test -f "${pkg}/share/fish/vendor_completions.d/mycli.fish"
+
+            echo "All completion files present."
+            touch $out
+          '';
         }
       );
     };
