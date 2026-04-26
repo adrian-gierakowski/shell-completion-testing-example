@@ -53,73 +53,27 @@ def test_bash(name, cwd, comp_words, expected):
 
 
 def test_zsh(name, cwd, comp_words, expected):
-    """Test Zsh completions non-interactively via compadd mock.
+    """Test Zsh completions non-interactively by evaluating the candidate array.
 
-    Overrides ``compadd``, ``_tags``, and ``_requested`` after
-    ``compinit`` so that ``_describe`` (called by ``_mycli``) proceeds
-    outside widget context.  The mock ``compadd`` captures candidates,
-    filters them by PREFIX, and prints them for exact-set comparison.
+    Loads the ``_mycli`` completion file in Zsh (stripping the ``#compdef``
+    directive and the ``_describe`` call), which populates the ``cmds``
+    array with ``key:description`` entries.  Candidates are then extracted,
+    filtered by the current prefix, and compared against *expected* exactly.
     """
     print(f"Testing {name}...")
 
     prefix = comp_words[-1]
-    words_zsh = ' '.join(f'"{w}"' for w in comp_words)
-    current = len(comp_words)
+    comp_file = f'{cwd}/completions/_mycli'
 
     zsh_script = f'''
-autoload -Uz compinit
-fpath=({cwd}/completions $fpath)
-compinit -u
-
-# --- Mock completion infrastructure so _describe works outside a widget ---
-
-# Capture array written by our mock compadd.
-_captured=()
-
-compadd() {{
-  local use_arrays=false skip_next=false
-  local -a cands=()
-  for arg in "$@"; do
-    if $skip_next; then skip_next=false; continue; fi
-    case "$arg" in
-      --)  ;;
-      -a)  use_arrays=true ;;
-      -d|-J|-V|-X|-x|-o|-O|-r|-R|-S|-s|-p|-W|-F|-M|-P|-E|-n|-k|-A|-D|-C)
-           skip_next=true ;;
-      -*)  ;;
-      *)   if $use_arrays; then
-             cands+=("${{(@P)arg}}")
-           else
-             cands+=("$arg")
-           fi ;;
-    esac
-  done
-  local pfx="{prefix}"
-  for c in "${{cands[@]}}"; do
-    if [[ -z "$pfx" || "$c" == ${{pfx}}* ]]; then
-      _captured+=("$c")
-    fi
-  done
-}}
-
-# _tags: allow one iteration then stop (mirrors real _tags loop behaviour).
-_comp_tags_done=false
-_tags() {{
-  if $_comp_tags_done; then return 1; fi
-  _comp_tags_done=true
-  return 0
-}}
-
-# _requested: always report the tag as wanted.
-_requested() {{ return 0; }}
-
-# --- Trigger completion ---
-PREFIX="{prefix}"
-words=({words_zsh})
-CURRENT={current}
-_mycli 2>/dev/null
-
-printf '%s\\n' "${{_captured[@]}}"
+eval "$(sed '/#compdef/d; /_describe/d' {comp_file})"
+prefix="{prefix}"
+for entry in "${{cmds[@]}}"; do
+  candidate="${{entry%%:*}}"
+  if [[ -z "$prefix" || "$candidate" == ${{prefix}}* ]]; then
+    print "$candidate"
+  fi
+done
 '''
 
     result = subprocess.run(
@@ -228,7 +182,7 @@ if __name__ == '__main__':
     )
 
     # --- Zsh tests ------------------------------------------------------------
-    # Non-interactive: mock compadd/_tags/_requested and call _mycli directly.
+    # Non-interactive: evaluate the candidate array from _mycli directly.
 
     test_zsh(
         name="Zsh - all completions",
