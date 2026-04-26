@@ -27,6 +27,7 @@
               pkgs.bashInteractive
               pkgs.zsh
               pkgs.fish
+              pkgs.installShellFiles
             ];
 
             installPhase = ''
@@ -34,15 +35,10 @@
               cp mycli.sh $out/bin/mycli
               chmod +x $out/bin/mycli
 
-              # Standard paths for completions
-              mkdir -p $out/share/bash-completion/completions
-              cp completions/mycli.bash $out/share/bash-completion/completions/mycli
-
-              mkdir -p $out/share/zsh/site-functions
-              cp completions/_mycli $out/share/zsh/site-functions/_mycli
-
-              mkdir -p $out/share/fish/vendor_completions.d
-              cp completions/mycli.fish $out/share/fish/vendor_completions.d/mycli.fish
+              installShellCompletion \
+                completions/mycli.bash \
+                completions/_mycli \
+                completions/mycli.fish
             '';
 
             doCheck = true;
