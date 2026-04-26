@@ -60,15 +60,17 @@
           pkgs = nixpkgs.legacyPackages.${system};
           pkg = self.packages.${system}.default;
         in {
-          completion-files = pkgs.runCommand "check-completion-files" {} ''
+          completion-files = pkgs.runCommand "check-completion-files" {
+            inherit pkg;
+          } ''
             echo "Checking bash completion..."
-            test -f ${pkg}/share/bash-completion/completions/mycli
+            test -f "$pkg/share/bash-completion/completions/mycli"
 
             echo "Checking zsh completion..."
-            test -f ${pkg}/share/zsh/site-functions/_mycli
+            test -f "$pkg/share/zsh/site-functions/_mycli"
 
             echo "Checking fish completion..."
-            test -f ${pkg}/share/fish/vendor_completions.d/mycli.fish
+            test -f "$pkg/share/fish/vendor_completions.d/mycli.fish"
 
             echo "All completion files present."
             touch $out
