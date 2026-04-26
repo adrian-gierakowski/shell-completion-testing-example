@@ -3,28 +3,208 @@ import subprocess
 import sys
 import os
 
-def test_shell(name, command, setup_commands, trigger_command,
-               expected=None):
-    print(f"Testing {name}...")
-    
-    if expected is None:
-        expected = ['build', 'deploy', 'test']
 
-    # Enforce a rich terminal environment for correct prompt/completion rendering
+def _check_exact_set(name, actual, expected):
+    """Compare *actual* candidate set against *expected* and exit on mismatch."""
+    expected_set = set(expected)
+    if actual != expected_set:
+        print(f"[{name}] completion set mismatch")
+        print(f"  expected: {sorted(expected_set)}")
+        print(f"  actual:   {sorted(actual)}")
+        if actual - expected_set:
+            print(f"  unexpected: {sorted(actual - expected_set)}")
+        if expected_set - actual:
+            print(f"  missing: {sorted(expected_set - actual)}")
+        sys.exit(1)
+
+
+def test_bash(name, cwd, comp_words, expected):
+    """Test Bash completions non-interactively via COMPREPLY inspection.
+
+    Invokes the registered completion function with the given *comp_words*
+    and compares the resulting COMPREPLY array against *expected* exactly.
+    """
+    print(f"Testing {name}...")
+
+    words_bash = ' '.join(f'"{w}"' for w in comp_words)
+    cword = len(comp_words) - 1
+
+    bash_script = (
+        f'source {cwd}/completions/mycli.bash\n'
+        f'COMP_WORDS=({words_bash})\n'
+        f'COMP_CWORD={cword}\n'
+        f'_mycli\n'
+        f'printf "%s\\n" "${{COMPREPLY[@]}}"\n'
+    )
+
+    result = subprocess.run(
+        ['bash', '--noprofile', '--norc', '-c', bash_script],
+        capture_output=True, text=True, timeout=10,
+    )
+
+    if result.returncode != 0:
+        print(f"[{name}] command exited with status {result.returncode}")
+        print(f"stderr: {result.stderr!r}")
+        sys.exit(1)
+
+    actual = {l.strip() for l in result.stdout.strip().splitlines() if l.strip()}
+    _check_exact_set(name, actual, expected)
+    print(f"[{name}] completion OK\n")
+
+
+def test_zsh(name, cwd, comp_words, expected):
+    """Test Zsh completions non-interactively via completion-API interception.
+
+    Loads the completion function through ``compinit`` + ``fpath`` (the
+    standard Zsh mechanism), then overrides the public completion helpers
+    (``_describe`` and ``compadd``) to capture the candidates that the
+    completion script registers.
+
+    This treats the completion script as a black box — it is loaded and
+    invoked through the standard Zsh completion system, and we only
+    intercept the public API surface through which candidates are
+    registered.
+
+    *Why override ``_describe``?*  The real ``_describe`` relies on
+    builtins (``comptags``, ``compdescribe``) that are only available
+    inside a ZLE widget context.  Overriding it lets us capture
+    candidates without requiring an interactive terminal.  ``compadd``
+    (the builtin) is also overridden as a fallback for scripts that
+    register candidates directly.
+    """
+    print(f"Testing {name}...")
+
+    prefix = comp_words[-1]
+    words_zsh = ' '.join(f'"{w}"' for w in comp_words)
+    current = len(comp_words)
+
+    zsh_script = f'''
+autoload -Uz compinit
+fpath=({cwd}/completions $fpath)
+compinit -u
+
+# --- Test harness: capture completion candidates ---
+
+typeset -a _captured
+
+# Override _describe (the standard Zsh completion helper for adding
+# candidates with descriptions).  The real implementation depends on
+# builtins (comptags, compdescribe) that only work inside a ZLE widget,
+# so we replace it with a simple version that extracts candidates from
+# the "key:description" arrays and filters by PREFIX.
+_describe() {{
+  local _opt
+  local OPTIND OPTARG
+  # Strip standard _describe option flags.
+  while getopts "oOt:12JVx" _opt; do :; done
+  shift $(( OPTIND - 1 ))
+
+  # First positional arg is the group description — skip it.
+  shift
+
+  # Remaining positional args are array names (possibly with match
+  # arrays, extra options, and "--" group separators).
+  while (( $# )); do
+    if [[ "$1" = -- ]]; then shift; continue; fi
+    if [[ "$1" = -* ]]; then shift; continue; fi
+
+    # Treat as an array of "key:description" entries.
+    local -a _arr
+    _arr=("${{(@P)1}}")
+    shift
+
+    for _entry in "${{_arr[@]}}"; do
+      local _cand="${{_entry%%:*}}"
+      if [[ -z "$PREFIX" || "$_cand" == ${{PREFIX}}* ]]; then
+        _captured+=("$_cand")
+      fi
+    done
+
+    # If the next arg is also a plain name (not an option or separator),
+    # it is the optional matches array — skip it.
+    if [[ $# -gt 0 && "$1" != -* && "$1" != -- ]]; then
+      shift
+    fi
+  done
+  return 0
+}}
+
+# Override compadd (shadows the builtin) as a fallback for scripts that
+# register candidates directly rather than through _describe.
+compadd() {{
+  local -a _zo
+  zparseopts -D -a _zo \\
+    J: V: d: o: s: S: p: P: i: I: W: F: r: R: M+: x: X: E: \\
+    q e f k l U Q n 1 2 C a O: A: D:
+
+  local _has_a=0
+  for _o in "${{_zo[@]}}"; do [[ "$_o" = "-a" ]] && _has_a=1; done
+
+  local -a _cands
+  if (( _has_a )); then
+    for _n in "$@"; do _cands+=("${{(@P)_n}}"); done
+  else
+    _cands=("$@")
+  fi
+
+  for _c in "${{_cands[@]}}"; do
+    if [[ -z "$PREFIX" || "$_c" == ${{PREFIX}}* ]]; then
+      _captured+=("$_c")
+    fi
+  done
+}}
+
+# Stub _tags so that completion scripts calling it directly (outside
+# _describe) do not hit the comptags builtin.
+_tags() {{ return 0; }}
+
+# --- Set completion context and invoke the function ---
+
+words=({words_zsh})
+CURRENT={current}
+PREFIX="{prefix}"
+
+_mycli 2>/dev/null
+
+printf '%s\\n' "${{_captured[@]}}"
+'''
+
+    result = subprocess.run(
+        ['zsh', '-f', '-c', zsh_script],
+        capture_output=True, text=True, timeout=10,
+    )
+
+    if result.returncode != 0:
+        print(f"[{name}] command exited with status {result.returncode}")
+        print(f"stderr: {result.stderr!r}")
+        sys.exit(1)
+
+    actual = {l.strip() for l in result.stdout.strip().splitlines() if l.strip()}
+    _check_exact_set(name, actual, expected)
+    print(f"[{name}] completion OK\n")
+
+
+def test_zsh_interactive(name, command, setup_commands, trigger_command,
+                         expected):
+    """Verify Zsh interactive completion display (descriptions, formatting).
+
+    Uses pexpect PTY interaction to check that expected strings appear in
+    the completion output.  This complements ``test_zsh()`` by verifying
+    the interactive user experience including description text rendered by
+    ``_describe``.
+    """
+    print(f"Testing {name}...")
+
     env = os.environ.copy()
     env['TERM'] = 'xterm-256color'
-    
+
     p = pexpect.spawn(command, env=env, encoding='utf-8')
-    
-    # Send setup configurations (e.g., sourcing files, binding tabs)
+
     for cmd in setup_commands:
         p.sendline(cmd)
-        
-    # Trigger the completion via literal Tab key (\t)
+
     p.send(trigger_command)
-    
-    # Compgen, _describe, and fish all output completions alphabetically
-    # So we assert against the ordered sequence in the output buffer
+
     for item in expected:
         try:
             p.expect(item, timeout=5)
@@ -32,52 +212,131 @@ def test_shell(name, command, setup_commands, trigger_command,
             print(f"[{name}] TIMEOUT waiting for '{item}'")
             print(f"Buffer dump: {p.buffer}")
             sys.exit(1)
-            
+
     print(f"[{name}] completion OK\n")
+
+
+def test_fish(name, cwd, query, expected):
+    """Test Fish completions using the non-interactive ``complete -C`` command.
+
+    Validates that the command exits successfully and that the returned
+    completion candidates match *expected* exactly.
+    """
+    print(f"Testing {name}...")
+
+    fish_result = subprocess.run(
+        ['fish', '-c',
+         f'source {cwd}/completions/mycli.fish; complete -C "{query}"'],
+        capture_output=True, text=True, timeout=10,
+    )
+
+    if fish_result.returncode != 0:
+        print(f"[{name}] command exited with status {fish_result.returncode}")
+        print(f"stderr: {fish_result.stderr!r}")
+        sys.exit(1)
+
+    # Parse completion candidates (first column before any tab-separated
+    # description text).
+    actual = set()
+    for line in fish_result.stdout.strip().splitlines():
+        candidate = line.split('\t')[0].strip()
+        if candidate:
+            actual.add(candidate)
+
+    _check_exact_set(name, actual, expected)
+    print(f"[{name}] completion OK\n")
+
 
 if __name__ == '__main__':
     cwd = os.getcwd()
-    
-    test_shell(
-        name="Bash",
-        command="bash --noprofile --norc",
-        setup_commands=[
-            'bind "set show-all-if-ambiguous on"',
-            f'source {cwd}/completions/mycli.bash',
-        ],
-        trigger_command='mycli \t'
+
+    # --- Bash tests -----------------------------------------------------------
+    # Non-interactive: invoke _mycli directly and inspect COMPREPLY.
+
+    test_bash(
+        name="Bash - all completions",
+        cwd=cwd,
+        comp_words=['mycli', ''],
+        expected=['build', 'deploy', 'test'],
     )
 
-    test_shell(
-        name="Zsh",
+    test_bash(
+        name="Bash - prefix 'de'",
+        cwd=cwd,
+        comp_words=['mycli', 'de'],
+        expected=['deploy'],
+    )
+
+    test_bash(
+        name="Bash - prefix 'bu'",
+        cwd=cwd,
+        comp_words=['mycli', 'bu'],
+        expected=['build'],
+    )
+
+    # --- Zsh tests ------------------------------------------------------------
+    # Non-interactive: load via compinit + fpath, capture compadd candidates.
+
+    test_zsh(
+        name="Zsh - all completions",
+        cwd=cwd,
+        comp_words=['mycli', ''],
+        expected=['build', 'deploy', 'test'],
+    )
+
+    test_zsh(
+        name="Zsh - prefix 'de'",
+        cwd=cwd,
+        comp_words=['mycli', 'de'],
+        expected=['deploy'],
+    )
+
+    test_zsh(
+        name="Zsh - prefix 'bu'",
+        cwd=cwd,
+        comp_words=['mycli', 'bu'],
+        expected=['build'],
+    )
+
+    # Interactive PTY test: verify descriptions are displayed correctly.
+    test_zsh_interactive(
+        name="Zsh - descriptions",
         command="zsh -f",
         setup_commands=[
             'autoload -Uz compinit',
             f'fpath=({cwd}/completions $fpath)',
-            'compinit -u',  # -u ignores insecure directory warnings in the sandbox
+            'compinit -u',
         ],
         trigger_command='mycli \t',
-        # Verify both subcommand names and their descriptions (zsh _describe feature)
         expected=['build', 'Build the project',
                   'deploy', 'Deploy the application',
                   'test', 'Run the test suite'],
     )
 
+    # --- Fish tests -----------------------------------------------------------
+    # Non-interactive: Fish's built-in ``complete -C`` query.
     # Fish 4+ sends XTGETTCAP terminal capability queries on PTY startup, which
-    # interferes with pexpect-based interactive testing.  Use `complete -C`
-    # (Fish's built-in non-interactive completion query) instead.
-    print("Testing Fish...")
-    fish_result = subprocess.run(
-        ['fish', '-c', f'source {cwd}/completions/mycli.fish; complete -C "mycli "'],
-        capture_output=True, text=True, timeout=10
-    )
-    fish_output = fish_result.stdout + fish_result.stderr
-    for expected in ['build', 'deploy', 'test']:
-        if expected not in fish_output:
-            print(f"[Fish] MISSING '{expected}' in output")
-            print(f"stdout: {fish_result.stdout!r}")
-            print(f"stderr: {fish_result.stderr!r}")
-            sys.exit(1)
-    print("[Fish] completion OK\n")
+    # interferes with pexpect-based interactive testing.
 
-    print("All PTY completion tests passed successfully.")
+    test_fish(
+        name="Fish - all completions",
+        cwd=cwd,
+        query="mycli ",
+        expected=['build', 'deploy', 'test'],
+    )
+
+    test_fish(
+        name="Fish - prefix 'de'",
+        cwd=cwd,
+        query="mycli de",
+        expected=['deploy'],
+    )
+
+    test_fish(
+        name="Fish - prefix 'bu'",
+        cwd=cwd,
+        query="mycli bu",
+        expected=['build'],
+    )
+
+    print("All completion tests passed successfully.")
